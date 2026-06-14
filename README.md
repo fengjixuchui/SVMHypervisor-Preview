@@ -263,9 +263,9 @@ NTSTATUS InstallNtCloseHook()
     g_NtCloseFuncInfo->JumpTrampolineOffset = sizeof(trampoline->Data);
 
     //    设置三个关键地址
-    DEF_PTR(UINT64, trampoline->Data.HookFuncAddress, 0)  = (UINT64)Hook_NtClose;
-    DEF_PTR(UINT64, trampoline->Data.CallbackAddress, 0)   = (UINT64)g_NtCloseOriginal + originalCodeLen;
-    DEF_PTR(UINT64, trampoline->Data.ReturnAddress, 0)     = (UINT64)trampoline + SvmGetReturnOffset();
+    DEF_PTR(UINT64, trampoline->Data.HookFuncAddress, 0) = (UINT64)Hook_NtClose;
+    DEF_PTR(UINT64, trampoline->Data.CallbackAddress, 0) = (UINT64)g_NtCloseOriginal + originalCodeLen;
+    DEF_PTR(UINT64, trampoline->Data.ReturnAddress, 0) = (UINT64)trampoline + SvmGetReturnOffset();
 
     //    保存原函数序言到蹦床
     memcpy(trampoline->Execute.OriginalCode, g_NtCloseOriginal, originalCodeLen);
@@ -436,6 +436,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 
 ## 注意事项
 
+- 该项目仅用于安全研究和学习目的
 - Hook 处理函数必须放在可执行段中（如 `.rhook` section），且需要保护该段不被 Guest 修改
 - 蹦床内存自动设置 NPT 保护（可执行但不可从 Guest 写入）
 - 在 Guest 状态下无法卸载 Hook 

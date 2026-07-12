@@ -1,17 +1,67 @@
-# SVMHypervisor
+# ⚡ SVMHypervisor
 
-基于 AMD SVM (Secure Virtual Machine) 的 NPT Hook 框架，运行于 Windows 内核模式。
+**基于 AMD SVM / NPT 的 Windows 内核级 Hook 研究框架**
 
-## 概述
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D4?style=flat-square&logo=windows)](https://learn.microsoft.com/windows-hardware/drivers/)
+[![Architecture](https://img.shields.io/badge/CPU-AMD%20SVM-ED1C24?style=flat-square)](https://www.amd.com/en/developer/sev.html)
+[![Language](https://img.shields.io/badge/language-C%20%7C%20x64%20ASM-00599C?style=flat-square&logo=c)](https://github.com/topics/kernel-driver)
+[![License](https://img.shields.io/badge/license-Research%20Only-orange?style=flat-square)](#安全说明)
 
-SVMHypervisor 利用 AMD-V (SVM) 的嵌套页表 (NPT) 机制，通过为 Guest 创建影子页面 (Shadow Page) 实现无痕 Hook。被 Hook 的函数在原始内存页上不可见，仅当 Guest 执行到目标地址时，NPT 将其重定向到包含 Hook 代码的影子页面，从而实现隐藏式拦截。
+SVMHypervisor 是一个运行在 Windows 内核模式下、基于 AMD SVM 与嵌套页表（NPT）的研究型 Hypervisor。项目通过按访问类型切换 NPT 映射实现函数 Hook 和内存写保护。
 
-核心原理：
-- **Shadow Page 0**：原始页面（Guest 正常访问时看到的内容）
-- **Shadow Page 1**：Hook 页面（Guest 执行时 NPT 重定向到此页，包含跳转到 Hook 函数的代码）
-- **蹦床 (Trampoline)**：用于保存原始指令并正确回调原函数
+> [!CAUTION]
+> 本项目包含可导致系统崩溃、任意内核内存访问和 MSR 修改的测试代码，仅用于隔离的研究与调试环境。
 
-## 导出 API
+## 📚 内容导航
+
+- [项目组成](#项目组成)
+- [工作原理](#工作原理)
+- [导出 API](#导出-api)
+- [Hook 示例](#hook-示例)
+- [Hook 流程详解](#hook-流程详解)
+- [数据页面保护](#数据页面保护)
+- [构建要求](#构建要求)
+- [启动顺序](#启动顺序)
+- [生命周期与清理](#生命周期与清理)
+- [注意事项与限制](#注意事项与限制)
+- [安全说明](#安全说明)
+
+## 🧩 项目组成
+
+| 项目 | 类型 | 用途 |
+|------|------|------|
+| `SVMHypervisor` | x64 内核驱动 | 初始化 SVM、维护 VMCB/NPT、处理 VM-Exit，并导出 Hook API |
+| `TestDriver` | x64 内核驱动 | 演示函数 Hook、页面保护、VM 启停和测试 IOCTL |
+| `Ring3_Test` | x64 用户程序 | 与 `TestDriver` 的 `\\.\SVMTest` 设备通信 |
+
+主要源码：
+
+- `SVMHypervisor/driver.c`：驱动入口、SVM 生命周期和 VM-Exit 分派。
+- `SVMHypervisor/VMCB.c`：VMCB 与虚拟 CPU 状态管理。
+- `SVMHypervisor/PTE.c`：NPT 构建、拆分页和权限设置。
+- `SVMHypervisor/Hook.c`：Hook、影子页和蹦床对象管理。
+- `SVMHypervisor/export_func.c`：供第三方内核驱动使用的导出接口。
+- `TestDriver/driver.c`：当前实现对应的完整使用示例。
+
+## ⚙️ 工作原理
+
+函数 Hook 使用同一 Guest 物理页对应的两份影子页：
+
+- **Shadow Page 0**：原始内容副本，初始映射为只读且不可执行。
+- **Shadow Page 1**：包含 `INT3` 的 Hook 副本，执行 NPF 后映射为只读且可执行。
+- **Trampoline**：保存完整的原函数序言、Hook 地址、回调地址和返回地址。
+
+执行流程：
+
+1. Guest 从 Shadow Page 0 执行目标地址，因 NX 触发 NPF VM-Exit。
+2. Hypervisor 验证目标 Hook，并将当前核心的 NPT 映射切换到 Shadow Page 1。
+3. Guest 在原函数入口执行 `INT3`，触发 `#BP` VM-Exit。
+4. Hypervisor 将 Guest RIP 改为 `JumpTrampolineAddress + JumpTrampolineOffset`。
+5. 蹦床执行原序言并调用 Hook 处理函数；返回成功时继续执行原函数剩余部分。
+
+映射切换按 CPU 核心独立生效，修改 NPT 后必须使对应核心的 TLB 失效。
+
+## 🔌 导出 API
 
 ### 全局变量
 
@@ -21,9 +71,21 @@ SVMHypervisor 利用 AMD-V (SVM) 的嵌套页表 (NPT) 机制，通过为 Guest 
 | `g_Unload` | `BOOLEAN` | 置 `TRUE` 允许驱动卸载 |
 | `g_bDebug` | `BOOLEAN` | 置 `TRUE` 开启调试模式 |
 | `g_Test` | `BOOLEAN` | 测试变量，置`TRUE` `test`函数返回`STATUS_SUCCESS`，置`FALSE`返回`STATUS_ACCESS_DENIED` |
-| `g_Test1` | `BOOLEAN` | 测试变量，用于测试Hypervisor只读内存是否生效 |
-| `g_CpuContexts` | `PCPU_CONTEXT` | 各 CPU 上下文数组，Guest状态下不可用 |
-| `CpuCount` | `ULONG` | 活跃 CPU 核心数 |
+| `g_Test1` | `BOOLEAN` | 测试 Hypervisor 只读内存保护 |
+| `g_Pid` | `DWORD64` | TestDriver 使用的目标进程 ID |
+
+`g_CpuContexts` 和 `CpuCount` 属于 Hypervisor 内部状态。第三方驱动获取 CPU 上下文时应调用 `SvmGetCpuContextIndex()`，不要直接解引用内部数组。
+
+### CPU 与 VM-Exit API
+
+```c
+PCPU_CONTEXT SvmGetCpuContextIndex(ULONG_PTR Index);
+void SvmGetGuestVmcb(PCPU_CONTEXT CpuContext, PMEMORY_INFO GuestVmcb);
+BOOLEAN SvmAddVmexitCallback(VMEXIT_CALLBACK Callback, UINT32 Flag, PUINT32 Index);
+BOOLEAN SvmRemoveVmexitCallback(UINT32 Flag, UINT32 Index);
+```
+
+回调类型包括 `CPUID_CALLBACK`、`VMM_CALLBACK` 和 `BP_CALLBACK`，每类最多注册 `MAX_CALLBACK_COUNT` 个回调。回调运行在 VM-Exit 上下文中，不得执行可能阻塞或不适用于当前 IRQL 的操作。
 
 ### Hook 管理 API
 
@@ -81,19 +143,28 @@ PHOOK_FUNC_INFO SvmAddHookFuncInfo(PHOOK_INFO hookInfo, UINT64 OriginalFuncAddre
 向 Hook 信息中添加一个函数 Hook 记录。
 - `OriginalFuncAddress`：被 Hook 的原函数地址
 - `HookFuncAddress`：Hook 处理函数地址
-- `FuncLength`：跳转代码长度（通过 `SvmGetJmpCodeBufferLength()` 获取）
+- `FuncLength`：用于匹配该函数入口地址范围的长度；当前 TestDriver 示例传入 `20`。它不是蹦床模板长度。
 
 #### SvmRemoveHookFuncInfo
 ```c
 void SvmRemoveHookFuncInfo(PHOOK_INFO hookInfo, PHOOK_FUNC_INFO funcInfo, BOOLEAN Lock);
 ```
-移除一个函数 Hook 记录并释放蹦床内存。
+移除一个函数 Hook 记录并释放蹦床内存。Hypervisor 一旦进入 Guest 状态后，该 API 不能再使用。
 
 #### SvmFindHookFuncInfo
 ```c
 PHOOK_FUNC_INFO SvmFindHookFuncInfo(PHOOK_INFO hookInfo, UINT64 RipAddress, BOOLEAN Lock);
 ```
 根据 RIP 地址查找对应的函数 Hook 记录。
+
+#### 其他查找接口
+
+```c
+PHOOK_INFO SvmFindHookInfoPageBase(PLIST_ENTRY ListHead, UINT64 VirtualAddress);
+PHOOK_FUNC_INFO SvmFindHookFuncInfoByJmpTrampoline(PHOOK_INFO HookInfo, UINT64 RipAddress, BOOLEAN Lock);
+```
+
+这两个接口暴露了内部列表相关能力，调用方必须保证传入对象和锁参数的生命周期正确。
 
 ### 蹦床 (Trampoline) API
 
@@ -115,21 +186,6 @@ void SvmGetJmpCodeFuncBuffer(PVOID Buffer, size_t Length);
 UINT64 SvmGetJmpCodeFuncBufferLength();
 ```
 获取蹦床功能代码模板及其长度。蹦床代码负责：保存原始指令 -> 调用 Hook 函数 -> 回调原函数剩余部分 -> 返回。
-
-### 引用计数 API
-
-#### SvmHookReference / SvmHookDereference
-```c
-void SvmHookReference(PHOOK_INFO HookInfo);
-void SvmHookDereference(PHOOK_INFO HookInfo);
-```
-增减 Hook 信息的引用计数。
-
-#### SvmIsHookRefCountZero
-```c
-BOOLEAN SvmIsHookRefCountZero(PHOOK_INFO HookInfo);
-```
-检查引用计数是否为零。
 
 ### 其他 API
 
@@ -162,9 +218,9 @@ void SvmFreeGuestShadowPage(PHOOK_INFO HookInfo, UINT32 ShadowPageIndex);
 ```
 释放指定索引的影子页面。
 
-## HOOK 示例
+## 🪝 Hook 示例
 
-以下示例展示如何使用导出 API Hook 一个内核函数。以 Hook `ZwClose` 为例：
+以下示例展示核心安装步骤。完整实现以 `TestDriver/driver.c` 中的 `TestInstallHook` 为准。示例 Hook `NtOpenProcess`：
 
 ```c
 #include <ntifs.h>
@@ -175,46 +231,47 @@ void SvmFreeGuestShadowPage(PHOOK_INFO HookInfo, UINT32 ShadowPageIndex);
 #pragma section(".rhook", read, execute)
 #pragma comment(linker, "/SECTION:.rhook,ER,ALIGN=4096")
 
-typedef NTSTATUS(__stdcall* _NtClose)(HANDLE Handle);
+#define HOOK_MATCH_LENGTH 20
 
 // Hook 处理函数必须放在可执行段中
 #pragma code_seg(".rhook$001")
-NTSTATUS __stdcall Hook_NtClose(PHOOK_REGS Regs)
+NTSTATUS __stdcall Hook_NtOpenProcess(PHOOK_REGS Regs)
 {
-    HANDLE Handle = (HANDLE)Regs->Rcx;
-    DbgPrintEx(77, 0, "[SVMHook] NtClose called! Handle: 0x%p\n", Handle);
+    ACCESS_MASK desiredAccess = (ACCESS_MASK)Regs->Rdx;
 
-    // 返回 STATUS_SUCCESS 继续执行原函数
-    // 返回 STATUS_ACCESS_DENIED 拒绝调用
+    if (desiredAccess & PROCESS_TERMINATE)
+    {
+        return STATUS_ACCESS_DENIED;
+    }
+
     return STATUS_SUCCESS;
 }
 #pragma code_seg()
 
-static PHOOK_INFO      g_NtCloseHookInfo   = NULL;
-static PHOOK_FUNC_INFO g_NtCloseFuncInfo    = NULL;
-static PVOID           g_NtCloseOriginal    = NULL;
+static PHOOK_INFO g_NtOpenProcessHookInfo = NULL;
+static PHOOK_FUNC_INFO g_NtOpenProcessFuncInfo = NULL;
+static PVOID g_NtOpenProcessOriginal = NULL;
 
-NTSTATUS InstallNtCloseHook()
+NTSTATUS InstallNtOpenProcessHook()
 {
-    // 1. 获取原函数地址
-    UNICODE_STRING funcName = RTL_CONSTANT_STRING(L"ZwClose");
-    g_NtCloseOriginal = MmGetSystemRoutineAddress(&funcName);
-    if (!g_NtCloseOriginal)
+    UNICODE_STRING funcName = RTL_CONSTANT_STRING(L"NtOpenProcess");
+    g_NtOpenProcessOriginal = MmGetSystemRoutineAddress(&funcName);
+    if (!g_NtOpenProcessOriginal)
     {
-        DbgPrintEx(77, 0, "[-] Failed to resolve NtClose.\n");
+        DbgPrintEx(77, 0, "[-] Failed to resolve NtOpenProcess.\n");
         return STATUS_NOT_FOUND;
     }
 
     // 2. 创建 Hook 信息节点
-    g_NtCloseHookInfo = SvmAddHookInfo("NtClose", (UINT64)g_NtCloseOriginal, PAGE_SIZE * 2);
-    if (!g_NtCloseHookInfo)
+    g_NtOpenProcessHookInfo = SvmAddHookInfo(NULL, (UINT64)g_NtOpenProcessOriginal, PAGE_SIZE * 2);
+    if (!g_NtOpenProcessHookInfo)
     {
         DbgPrintEx(77, 0, "[-] SvmAddHookInfo failed.\n");
         return STATUS_UNSUCCESSFUL;
     }
 
     // 3. 创建 Shadow Page 0（原始页面副本）
-    if (!SvmCreateShadowPage(g_NtCloseHookInfo, 0))
+    if (!SvmCreateShadowPage(g_NtOpenProcessHookInfo, 0))
     {
         DbgPrintEx(77, 0, "[-] SvmCreateShadowPage(0) failed.\n");
         return STATUS_UNSUCCESSFUL;
@@ -228,13 +285,13 @@ NTSTATUS InstallNtCloseHook()
     }
 
     // 5. 添加函数 Hook 记录
-    g_NtCloseFuncInfo = SvmAddHookFuncInfo(
-        g_NtCloseHookInfo,
-        (UINT64)g_NtCloseOriginal,
-        (UINT64)Hook_NtClose,
-        (SIZE_T)SvmGetJmpCodeBufferLength()
+    g_NtOpenProcessFuncInfo = SvmAddHookFuncInfo(
+        g_NtOpenProcessHookInfo,
+        (UINT64)g_NtOpenProcessOriginal,
+        (UINT64)Hook_NtOpenProcess,
+        HOOK_MATCH_LENGTH
     );
-    if (!g_NtCloseFuncInfo)
+    if (!g_NtOpenProcessFuncInfo)
     {
         DbgPrintEx(77, 0, "[-] SvmAddHookFuncInfo failed.\n");
         return STATUS_UNSUCCESSFUL;
@@ -242,7 +299,7 @@ NTSTATUS InstallNtCloseHook()
 
     // 6. 分配蹦床内存
     PJMP_FUNC_TRAMPOLINE trampoline = (PJMP_FUNC_TRAMPOLINE)SvmAllocateJmpTrampoline(
-        g_NtCloseFuncInfo,
+        g_NtOpenProcessFuncInfo,
         (SIZE_T)SvmGetJmpCodeFuncBufferLength()
     );
     if (!trampoline)
@@ -256,8 +313,11 @@ NTSTATUS InstallNtCloseHook()
     SvmGetJmpCodeFuncBuffer(trampoline,(SIZE_T)SvmGetJmpCodeFuncBufferLength());
 
     //    计算原函数序言长度
-    UINT8 originalCodeLen = GetInstructionLength(g_NtCloseOriginal, 20);
-    DbgPrintEx(77, 0, "[*] NtClose prologue length: %d bytes.\n", originalCodeLen);
+    UINT8 originalCodeLen = GetInstructionLength(g_NtOpenProcessOriginal, HOOK_MATCH_LENGTH);
+    if (!originalCodeLen || originalCodeLen > sizeof(trampoline->Execute.OriginalCode))
+    {
+        return STATUS_INVALID_BUFFER_SIZE;
+    }
 
     //    设置蹦床偏移
     g_NtCloseFuncInfo->JumpTrampolineOffset = sizeof(trampoline->Data);
@@ -287,7 +347,7 @@ NTSTATUS InstallNtCloseHook()
 }
 ```
 
-## HOOK 流程详解
+## 🔄 Hook 流程详解
 
 ### 安装 Hook 的完整步骤
 
@@ -378,7 +438,7 @@ NTSTATUS __stdcall YourHookFunc(PHOOK_REGS Regs);
 - 返回 `STATUS_SUCCESS`：继续执行原函数
 - 返回 `STATUS_ACCESS_DENIED`：拒绝调用，直接返回
 
-## 数据页面保护
+## 🛡️ 数据页面保护
 
 使用 `DataPage = TRUE` 的 Hook 信息可保护数据段不被 Guest 修改：
 
@@ -396,11 +456,27 @@ for (UINT32 i = 0; i < CpuCount; i++)
 }
 ```
 
-## 驱动加载顺序
+## 🛠️ 构建要求
 
-1. 加载 SVMHypervisor.sys（主驱动，初始化 SVM 虚拟化）
-2. 等待 SVM 初始化完成（`g_VmStart == TRUE`）
-3. 加载使用导出 API 的第三方驱动（如 TestDriver.sys）
+- Visual Studio 2026，项目文件当前记录的工具链版本为 14.51。
+- WDK 28000.1761，目标平台为 Windows x64。
+- 仅支持具备 AMD SVM/AMD-V 能力的 AMD 处理器；项目虽然保留 ARM64 配置项，但源码使用 AMD SVM 和 x64 汇编，不应将 ARM64 视为受支持目标。
+- 需要测试签名、内核调试器或其他合法的驱动加载环境。
+
+解决方案包含 `SVMHypervisor`、`TestDriver` 和 `Ring3_Test`。构建 `SVMHypervisor` 后会生成供内核驱动链接的 `SVMHypervisor.lib`。
+
+`TestDriver` 导入该 LIB 时必须手动指定路径：打开 **TestDriver 属性 → 链接器 → 输入 → 附加依赖项**，将 `SVMHypervisor.lib` 设置为当前机器上的实际文件路径；如只填写文件名，还需在 **链接器 → 常规 → 附加库目录** 中加入 LIB 所在目录。请分别检查 Debug/Release 和 x64 配置，删除或替换项目中原有的绝对路径，否则项目移动到其他目录或机器后会链接失败。
+
+第三方驱动还需要包含与当前 Hypervisor 版本匹配的 `test.h` 和 `amd_defs.h`。头文件、导入库与 `SVMHypervisor.sys` 必须来自同一次构建，避免导出结构或函数签名不一致。
+
+## 🚀 启动顺序
+
+1. 构建并加载 `SVMHypervisor.sys`。
+2. 构建并加载 `TestDriver.sys`；它创建 `\\.\SVMTest` 设备，并启动测试线程。
+3. 通过 `Ring3_Test` 或其他控制程序向 `SVMTest` 发送 `IOCTL_VM_START`，使 `g_VmStart` 变为 `TRUE`。
+4. TestDriver 的测试线程安装 `NtOpenProcess` 和 `TestFunc` Hook，并执行页面保护与调用测试。
+
+启动前应确认目标 CPU 支持 SVM。不要在未连接内核调试器、未准备恢复方式的机器上测试。
 
 第三方驱动示例入口：
 
@@ -426,19 +502,27 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 }
 ```
 
-## 编译要求
+## ♻️ 生命周期与清理
 
-- Visual Studio 2026 + WDK 28000.1761
-- 目标平台：x64 Only
-- 处理器要求：AMD CPU with SVM support
-- 将SVMHypervisor项目属性中的导入库设置为自己的目录
-- 链接 SVMHypervisor.lib 并包含 test.h / amd_defs.h
+Hook 创建后会被加入全局 Hook 列表。移除函数 Hook 的相关 API 只能在 Hypervisor 进入 Guest 状态之前调用；一旦进入 Guest 状态，禁止再调用 `SvmRemoveHookFuncInfo` 或相关移除、释放接口。
 
-## 注意事项
+**默认不建议开启驱动卸载。** 常规测试中不要将 `g_Unload` 设为 `TRUE`，也不要在 Hypervisor 或 Hook 仍处于活动状态时卸载驱动。
 
-- 该项目仅用于安全研究和学习目的
-- Hook 处理函数必须放在可执行段中（如 `.rhook` section），且需要保护该段不被 Guest 修改
-- 蹦床内存自动设置 NPT 保护（可执行但不可从 Guest 写入）
-- 在 Guest 状态下无法卸载 Hook 
-- `GetInstructionLength` 用于确定原函数序言长度，确保复制完整的指令边界
-- 所有 `SvmSetGuestShadowPage` 调用需对每个 CPU 核心执行
+当前 `TestDriver` 的 `UnloadDriver` 只删除设备和符号链接，没有移除已安装的 Hook，也没有释放其 MDL 和映射资源。只有在自行实现并验证完整的停机流程后，才应考虑允许卸载：停止 VM、撤销每个核心的映射、确认目标代码不会继续执行，并释放 Hook、蹦床、MDL 和页面资源。否则卸载可能留下指向已释放驱动代码或数据的引用，导致系统崩溃。
+
+## ⚠️ 注意事项与限制
+
+- Hook 处理函数必须位于 Guest 可执行且 Hypervisor 保护的代码段中；TestDriver 使用 `.hook` 段并通过 `SvmProtectDriverSection` 保护。
+- `SvmAllocateJmpTrampoline` 分配非分页可执行内存，并由 NPT 设置为 Guest 可执行但不可写。
+- `GetInstructionLength` 的结果必须是完整指令边界，且不得超过蹦床 `OriginalCode` 缓冲区；不能直接假设固定字节数适用于所有目标函数。
+- `SvmSetGuestShadowPage` 的映射只对传入的 CPU 上下文生效。批量设置时必须遍历所有活动 CPU，并确保目标核心不会并发执行正在修改的映射。
+- `SvmAddVmexitCallback` 的回调运行在 VM-Exit 路径中，不能调用可能阻塞的内核 API。
+- Hypervisor 一旦进入 Guest 状态，不得再调用移除 Hook 或释放相关影子页的 API。
+- 默认保持驱动不可卸载；不要仅通过设置 `g_Unload = TRUE` 允许卸载，除非所有虚拟化状态和关联资源都已可靠清理。
+- 该项目当前是研究和演示代码，不是可直接用于生产环境的通用 Hook 框架。
+
+## 🔒 安全说明
+
+`TestDriver` 暴露的测试 IOCTL 包括内核内存读写、MSR 读写、进程终止和 SVM 控制。它们没有提供生产级访问控制，加载该驱动等同于向具有设备访问权限的调用方授予高权限内核测试能力。
+
+请仅在隔离虚拟机或专用测试机中使用，并在测试结束后停止虚拟化、移除 Hook、卸载测试驱动和 Hypervisor。

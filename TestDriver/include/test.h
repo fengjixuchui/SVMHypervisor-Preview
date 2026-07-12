@@ -6,6 +6,7 @@
 #define NO_SHADOW_PAGE (UINT32)-1
 #define JMP_POOL 'JpOl'
 #define INT_3 0xCC
+#define PA_TO_VA(pa) MmGetVirtualForPhysical((PHYSICAL_ADDRESS){.QuadPart = (pa)})
 #define DEF_PTR(type,baseAddress,offset) (*(type*)(((UCHAR*)(baseAddress))+((__int64)(offset))))
 #define PTR_ADD(type,baseAddress,offset) ((type)(((UCHAR*)(baseAddress))+((__int64)(offset))))
 #define GET_4KB_PAGE_BASE(VirtualAddress) (((((UINT64)VirtualAddress) >> 12) << 12))
@@ -237,6 +238,8 @@ EXTERN_C _declspec(dllimport) BOOLEAN g_Unload;
 EXTERN_C _declspec(dllimport) BOOLEAN g_bDebug;
 EXTERN_C _declspec(dllimport) DWORD64 g_Pid;
 EXTERN_C _declspec(dllimport) volatile ULONG CpuCount;
+EXTERN_C __declspec(dllimport) BOOLEAN CheckSvmSupport();
+EXTERN_C _declspec(dllimport) PCPU_CONTEXT SvmGetCpuContextIndex(ULONG_PTR Index);
 EXTERN_C _declspec(dllimport) void SvmGetGuestVmcb(PCPU_CONTEXT CpuContext, PMEMORY_INFO GuestVmcb);
 EXTERN_C _declspec(dllimport) BOOLEAN SvmAddVmexitCallback(VMEXIT_CALLBACK Callback, UINT32 Flag, PUINT32 Index);
 EXTERN_C _declspec(dllimport) BOOLEAN SvmRemoveVmexitCallback(UINT32 Flag, UINT32 Index);

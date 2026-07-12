@@ -2,6 +2,7 @@
 #include <ntifs.h>
 #include "Hook.h"
 #include "VMCB.h"
+#include <intrin.h>
 #include "asmfunc.h"
 #define HV_VMMCALL_READMEMORY 0x40000000
 #define MAX_CALLBACK_COUNT 64
@@ -22,6 +23,7 @@ EXTERN_C KSPIN_LOCK g_HyperCallbackListLock;
 EXTERN_C VMEXIT_CALLBACK g_CpuidCallbackList[MAX_CALLBACK_COUNT];
 EXTERN_C VMEXIT_CALLBACK g_BpCallbackList[MAX_CALLBACK_COUNT];
 EXTERN_C VMEXIT_CALLBACK g_HyperCallbackList[MAX_CALLBACK_COUNT];
+EXTERN_C _declspec(dllexport) PCPU_CONTEXT SvmGetCpuContextIndex(ULONG_PTR Index);
 EXTERN_C _declspec(dllexport) void SvmGetGuestVmcb(PCPU_CONTEXT CpuContext, PMEMORY_INFO GuestVmcb);
 EXTERN_C _declspec(dllexport) BOOLEAN SvmAddVmexitCallback(VMEXIT_CALLBACK Callback, UINT32 Flag, PUINT32 Index);
 EXTERN_C _declspec(dllexport) BOOLEAN SvmRemoveVmexitCallback(UINT32 Flag, UINT32 Index);

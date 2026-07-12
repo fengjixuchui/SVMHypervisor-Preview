@@ -146,18 +146,18 @@ PHOOK_INFO FindHookInfoPageBase(PLIST_ENTRY ListHead, UINT64 VirtualAddress, PKS
 	if (IsListEmpty(ListHead)) return NULL;
 	PHOOK_INFO hookInfo = NULL;
 	GUID emptyGuid = { 0 };
-	UINT64 PhysicalAddress = MmGetPhysicalAddress((PVOID)VirtualAddress).QuadPart;
 	KIRQL irql = KeGetCurrentIrql();
 	if (HookListLock) KeAcquireSpinLock(HookListLock, &irql);
 	for (PLIST_ENTRY entry = ListHead->Flink; entry != ListHead; entry = entry->Flink)
 	{
 		PHOOK_INFO tmpInfo = CONTAINING_RECORD(entry, HOOK_INFO, HookList);
 		if (!tmpInfo->HookPageInfo) continue;
+		if (!tmpInfo->PageBaseCount) continue;
 		if (IsEqualGUID(&tmpInfo->HookId, &emptyGuid) || !tmpInfo->HookPageInfo[0].PageBaseInfo.VirtualAddress || !tmpInfo->HookPageInfo[0].PageBaseInfo.PhysicalAddress.QuadPart)
 		{
 			continue;
 		}
-		if (((UINT64)tmpInfo->HookPageInfo[tmpInfo->PageBaseCount - 1].PageBaseInfo.PhysicalAddress.QuadPart + PAGE_SIZE) > PhysicalAddress && ((UINT64)tmpInfo->HookPageInfo[0].PageBaseInfo.PhysicalAddress.QuadPart) <= PhysicalAddress)
+		if (((UINT64)tmpInfo->HookPageInfo[tmpInfo->PageBaseCount - 1].PageBaseInfo.VirtualAddress + PAGE_SIZE) > VirtualAddress && ((UINT64)tmpInfo->HookPageInfo[0].PageBaseInfo.VirtualAddress) <= VirtualAddress)
 		{
 			hookInfo = tmpInfo;
 			break;

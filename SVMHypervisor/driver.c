@@ -208,7 +208,7 @@ NTSTATUS __stdcall Hook_Func(PHOOK_REGS Regs)
 	{
 		if ((HANDLE)g_Pid!=PsGetCurrentProcessId())
 		{
-			if (g_bDebug) DbgPrintEx(77, 0, "[*]EPT HOOK PspTerminateThreadByPointer Success! Target PID: %llu Current PID: %llu Current TID: %llu\n", (DWORD64)g_Pid,(DWORD64)PsGetCurrentProcessId(),(DWORD64)PsGetCurrentThreadId());
+			if (g_bDebug) DbgPrintEx(77, 0, "[*]NPT HOOK PspTerminateThreadByPointer Success! Target PID: %llu Current PID: %llu Current TID: %llu\n", (DWORD64)g_Pid,(DWORD64)PsGetCurrentProcessId(),(DWORD64)PsGetCurrentThreadId());
 			return STATUS_ACCESS_DENIED;
 		}
 	}
@@ -408,6 +408,7 @@ NTSTATUS VmStartWorker(PVOID context)
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Hsave.VirtualAddress, g_CpuContexts[i].Hsave.Size, TRUE, TRUE, FALSE);
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Iopm.VirtualAddress, g_CpuContexts[i].Iopm.Size, FALSE, TRUE, FALSE);
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Msrpm.VirtualAddress, g_CpuContexts[i].Msrpm.Size, FALSE, TRUE, FALSE);
+		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)IsVirtualCpu, GET_PAGE_ALIGN_LENGTH(sizeof(IsVirtualCpu)), FALSE, TRUE, FALSE);
 	}
 	g_ReadMemoryTable[0] = &g_ResetShadowPageThreadObject;
 	PHOOK_INFO protectEntry = AddHookInfo(&HookListHead, NULL, (UINT64)EntryStartAddr, ENTRY_SECTION_SIZE, &HookListLock);
@@ -625,13 +626,49 @@ void VmExitHandler(PCPU_CONTEXT context, PGUEST_REGS Regs)
 	UNREFERENCED_PARAMETER(Regs);
 	PVMCB GuestVmcbVa = (PVMCB)context->GuestVmcb.VirtualAddress;
 	UINT64 exitCode = GuestVmcbVa->ControlArea.ExitCode;
-	if(KeGetCurrentIrql() < DISPATCH_LEVEL)
+	KIRQL oldIrql = PASSIVE_LEVEL;
+	BOOLEAN lockAcquired = FALSE;
+
+	if (KeGetCurrentIrql() < DISPATCH_LEVEL)
 	{
-		KeAcquireSpinLock(&(context->VmExitLock), &(context->OldIrql));
+		KeAcquireSpinLock(&context->VmExitLock, &oldIrql);
+		lockAcquired = TRUE;
 	}
 	__svm_vmload(context->HostVmcb.PhysicalAddress.QuadPart);
 	switch (exitCode)
 	{
+	case VMEXIT_CPUID:
+	{
+		int cpuInfo[4] = { 0 };
+		UINT32 leaf = (UINT32)GuestVmcbVa->StateSaveArea.Rax;
+		UINT32 subleaf = (UINT32)Regs->rcx;
+		__cpuidex(cpuInfo, (int)leaf, (int)subleaf);
+		if (leaf == 0x00000001)
+		{
+			cpuInfo[2] &= ~(1 << 31);
+		}
+		if (leaf == 0x80000001)
+		{
+			cpuInfo[2] &= ~(1 << 2);
+		}
+		if (leaf == 0x8000000a)
+		{
+			cpuInfo[3] &= ~(1 << 0);
+		}
+		GuestVmcbVa->StateSaveArea.Rax = (UINT64)(UINT32)cpuInfo[0];
+		Regs->rbx = (UINT64)(UINT32)cpuInfo[1];
+		Regs->rcx = (UINT64)(UINT32)cpuInfo[2];
+		Regs->rdx = (UINT64)(UINT32)cpuInfo[3];
+		for (UINT32 i = 0; i < MAX_CALLBACK_COUNT; i++)
+		{
+			if (g_CpuidCallbackList[i])
+			{
+				g_CpuidCallbackList[i](context, Regs);
+			}
+		}
+		GuestVmcbVa->StateSaveArea.Rip = GuestVmcbVa->ControlArea.NRip;
+		break;
+	}
 	case VMEXIT_MSR:
 	{
 		UINT32 msr = (Regs->rcx & 0xFFFFFFFF);
@@ -646,12 +683,21 @@ void VmExitHandler(PCPU_CONTEXT context, PGUEST_REGS Regs)
 				GuestVmcbVa->StateSaveArea.Efer = (value.QuadPart | EFER_SVME);
 				goto Msr_Exit;
 			}
+			else if (msr == MSR_VM_HSAVE_PA)
+			{
+				goto Msr_Exit;
+			}
 			__writemsr(msr, value.QuadPart);
 			goto Msr_Exit;
 		}
 		else
 		{
 			value.QuadPart = __readmsr(msr);
+			if (msr == MSR_EFER) value.QuadPart &= ~EFER_SVME;
+			else if (msr == MSR_VM_HSAVE_PA)
+			{
+				value.QuadPart = 0;
+			}
 			GuestVmcbVa->StateSaveArea.Rax = value.LowPart;
 			Regs->rdx = value.HighPart;
 		}
@@ -769,14 +815,10 @@ void VmExitHandler(PCPU_CONTEXT context, PGUEST_REGS Regs)
 			hookInfo = EnumNextHookInfo(&HookListHead, hookInfo, NULL);
 		}
 		if (handled) break;
-		if (g_bDebug)
-		{
-			GuestVmcbVa->ControlArea.EventInj.Bits.Valid = 1;
-			GuestVmcbVa->ControlArea.EventInj.Bits.Vector = 3;
-			GuestVmcbVa->ControlArea.EventInj.Bits.Type = 3;
-			GuestVmcbVa->ControlArea.EventInj.Bits.ErrorCodeValid = 0;
-		}
-		else GuestVmcbVa->StateSaveArea.Rip += 1;
+		GuestVmcbVa->ControlArea.EventInj.Bits.Valid = 1;
+		GuestVmcbVa->ControlArea.EventInj.Bits.Vector = 3;
+		GuestVmcbVa->ControlArea.EventInj.Bits.Type = 3;
+		GuestVmcbVa->ControlArea.EventInj.Bits.ErrorCodeValid = 0;
 		for (UINT32 i = 0; i < MAX_CALLBACK_COUNT; i++)
 		{
 			if (g_BpCallbackList[i])
@@ -842,6 +884,7 @@ void VmExitHandler(PCPU_CONTEXT context, PGUEST_REGS Regs)
 							SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Hsave.VirtualAddress, g_CpuContexts[i].Hsave.Size, FALSE, FALSE, TRUE);
 							SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Iopm.VirtualAddress, g_CpuContexts[i].Iopm.Size, FALSE, FALSE, TRUE);
 							SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Msrpm.VirtualAddress, g_CpuContexts[i].Msrpm.Size, FALSE, FALSE, TRUE);
+							SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)IsVirtualCpu, GET_PAGE_ALIGN_LENGTH(sizeof(IsVirtualCpu)), FALSE, FALSE, TRUE);
 						}
 						memset(IsVirtualCpu, 0, MAX_SVM_THREADS);
 						PHOOK_INFO hookInfo = NULL;
@@ -905,9 +948,9 @@ void VmExitHandler(PCPU_CONTEXT context, PGUEST_REGS Regs)
 	}
 	}
 	GuestVmcbVa->ControlArea.VmcbClean = 0;
-	if (KeGetCurrentIrql() > context->OldIrql)
+	if (lockAcquired)
 	{
-		KeReleaseSpinLock(&(context->VmExitLock), context->OldIrql);
+		KeReleaseSpinLock(&(context->VmExitLock), oldIrql);
 	}
 }
 #pragma code_seg()
@@ -953,6 +996,7 @@ __forceinline void ResumeAllGuest()
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Hsave.VirtualAddress, g_CpuContexts[i].Hsave.Size, TRUE, TRUE, FALSE);
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Iopm.VirtualAddress, g_CpuContexts[i].Iopm.Size, FALSE, TRUE, FALSE);
 		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)g_CpuContexts[i].Msrpm.VirtualAddress, g_CpuContexts[i].Msrpm.Size, FALSE, TRUE, FALSE);
+		SetNestedPageProtection(&(g_CpuContexts[i]), (UINT64)IsVirtualCpu, GET_PAGE_ALIGN_LENGTH(sizeof(IsVirtualCpu)), FALSE, TRUE, FALSE);
 	}
 	funcHookInfo = EnumNextHookInfo(&HookListHead, funcHookInfo, NULL);
 	while (funcHookInfo)

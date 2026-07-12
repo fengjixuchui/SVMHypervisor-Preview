@@ -93,7 +93,7 @@
     </Link>
     <Link>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
-      <ImportLibrary>D:\C\Projects\SVMHypervisor-Preview\TestDriver\include\SVMHypervisor.lib</ImportLibrary>
+      <ImportLibrary>$(SolutionDir)TestDriver\include\SVMHypervisor.lib</ImportLibrary>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <MergeSections>_TEXT=.text;_PAGE=PAGE;.entry=.entry</MergeSections>
     </Link>
@@ -115,7 +115,7 @@
     </Link>
     <Link>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
-      <ImportLibrary>D:\C\Projects\SVMHypervisor-Preview\TestDriver\include\SVMHypervisor.lib</ImportLibrary>
+      <ImportLibrary>$(SolutionDir)TestDriver\include\SVMHypervisor.lib</ImportLibrary>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">

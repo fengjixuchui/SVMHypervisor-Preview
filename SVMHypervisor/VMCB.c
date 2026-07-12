@@ -115,7 +115,7 @@ BOOLEAN InitVMCB(PCPU_CONTEXT context)
 		vmcb->ControlArea.NCr3 = context->PageTableInfo.PML4.PhysicalAddress.QuadPart;
 		vmcb->ControlArea.GuestAsid = context->CpuIndex + 1;
 		vmcb->ControlArea.InterceptException |= INTERCEPT_EXCP_BP;
-		vmcb->ControlArea.InterceptMisc1 |= INTERCEPT_MISC1_SHUTDOWN | INTERCEPT_MISC1_IOIO | INTERCEPT_MISC1_MSR;
+		vmcb->ControlArea.InterceptMisc1 |= INTERCEPT_MISC1_SHUTDOWN | INTERCEPT_MISC1_IOIO | INTERCEPT_MISC1_MSR | INTERCEPT_MISC1_CPUID;
 		vmcb->ControlArea.InterceptMisc2 |= INTERCEPT_MISC2_VMMCALL | INTERCEPT_MISC2_VMRUN;
 		vmcb->StateSaveArea.Cr0 = __readcr0();
 		vmcb->StateSaveArea.Cr2 = __readcr2();
@@ -145,6 +145,7 @@ BOOLEAN InitVMCB(PCPU_CONTEXT context)
 		IOPM_ENABLE_PORT(((PUCHAR)context->Iopm.VirtualAddress), 0xB2);
 		IOPM_ENABLE_PORT(((PUCHAR)context->Iopm.VirtualAddress), 0xB0);
 		((PUINT8)context->Msrpm.VirtualAddress)[0x820] |= 0x03;
+		((PUINT8)context->Msrpm.VirtualAddress)[0x1045] |= ((1 << 6) | (1 << 7));
 		vmcb->StateSaveArea.GPat = __readmsr(MSR_PAT);
 		hostVmcb->StateSaveArea.Rsp = PTR_ADD(UINT64, context->HostStack.VirtualAddress, STACK_SIZE - 8);
 		*(UINT64*)hostVmcb->StateSaveArea.Rsp = (UINT64)context;

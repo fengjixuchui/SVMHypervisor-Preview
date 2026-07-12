@@ -127,6 +127,11 @@
     <ClInclude Include="include\amd_defs.h" />
     <ClInclude Include="include\test.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SVMHypervisor\SVMHypervisor.vcxproj">
+      <Project>{5b38e042-8307-ad2c-e0bd-1587f3fd8135}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

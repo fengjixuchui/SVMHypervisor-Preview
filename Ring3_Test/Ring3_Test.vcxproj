@@ -145,6 +145,14 @@
   <ItemGroup>
     <ClCompile Include="Ring3_Test.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Ring3_Test.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TestDriver\TestDriver.vcxproj">
+      <Project>{3b2d8fdb-9a05-fca1-b8a9-1934a4d84327}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

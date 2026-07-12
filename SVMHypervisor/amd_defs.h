@@ -36,7 +36,7 @@
 #define CR4_SMAP (1ULL<<21)
 #define EFER_SVME (1ULL << 12)
 #define VMEXIT_CPUID 0x72
-#define VMEXIT_MSR   0x7C
+#define VMEXIT_MSR 0x7C
 #define VMEXIT_VMMCALL 0x81
 #define VMEXIT_EXCP_BP 0x43
 #define VMEXIT_EXCP_GP 0x4D

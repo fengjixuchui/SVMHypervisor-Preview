@@ -1,6 +1,10 @@
 ﻿#include "export_func.h"
 #include "VMCB.h"
 #pragma code_seg(".entry$002")
+PCPU_CONTEXT SvmGetCpuContextIndex(ULONG_PTR Index)
+{
+	return (PCPU_CONTEXT) & (g_CpuContexts[Index]);
+}
 void SvmGetGuestVmcb(PCPU_CONTEXT CpuContext, PMEMORY_INFO GuestVmcb)
 {
 	if (CpuContext && GuestVmcb)

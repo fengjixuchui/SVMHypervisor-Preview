@@ -44,6 +44,9 @@ UINT64 TestPid = 0;
 #pragma data_seg("rtest")
 BOOLEAN g_driverTest = FALSE;
 PDEVICE_OBJECT g_DeviceObject = NULL;
+PMDL g_NtOpenProcessMdl = NULL;
+PMDL g_Test1Mdl = NULL;
+PVOID g_Test1Map = NULL;
 #pragma data_seg()
 #pragma section(".hook", read, execute)
 #pragma code_seg(".hook")
@@ -304,25 +307,40 @@ VOID MyCallback(PVOID context)
 		}
 	}
 }
-NTSTATUS UnloadDriver(PDRIVER_OBJECT DriverObject)
+VOID UnloadDriver(PDRIVER_OBJECT DriverObject)
 {
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNICODE_STRING symbolicLink =
 		RTL_CONSTANT_STRING(L"\\DosDevices\\SVMTest");
-
+	if (g_Test1Map && g_Test1Mdl)
+	{
+		MmUnmapLockedPages(g_Test1Map, g_Test1Mdl);
+		g_Test1Map = NULL;
+	}
+	if (g_Test1Mdl)
+	{
+		IoFreeMdl(g_Test1Mdl);
+		g_Test1Mdl = NULL;
+	}
+	if (g_NtOpenProcessMdl)
+	{
+		MmUnlockPages(g_NtOpenProcessMdl);
+		IoFreeMdl(g_NtOpenProcessMdl);
+		g_NtOpenProcessMdl = NULL;
+	}
 	IoDeleteSymbolicLink(&symbolicLink);
 	IoDeleteDevice(g_DeviceObject);
-	return STATUS_SUCCESS;
 }
 NTSTATUS TestStartThread(PVOID context)
 {
-	UNREFERENCED_PARAMETER(context);
+	PDRIVER_OBJECT DriverObject = (PDRIVER_OBJECT)context;
 	SvmProtectDriverSection((UINT64)HookNtOpenProcess, PAGE_SIZE, FALSE, NULL, 0);
 	UNICODE_STRING funcName = RTL_CONSTANT_STRING(L"NtOpenProcess");
 	PVOID funcAddress = MmGetSystemRoutineAddress(&funcName);
 	PMDL mdl = IoAllocateMdl(funcAddress, PAGE_SIZE * 3, FALSE, FALSE, NULL);
 	if (!mdl) KeBugCheckEx(0x3B, (ULONG_PTR)IoAllocateMdl, 0, 0, 0);
 	MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+	g_NtOpenProcessMdl = mdl;
 	TestInstallHook(funcAddress, (PVOID)HookNtOpenProcess, PAGE_SIZE * 2);
 	TestInstallHook((PVOID)TestFunc, (PVOID)HookTestFunc, PAGE_SIZE);
 	while (g_VmStart == FALSE)
@@ -335,8 +353,11 @@ NTSTATUS TestStartThread(PVOID context)
 	timeout.QuadPart = -10000 * 1000;
 	KeDelayExecutionThread(KernelMode, FALSE, &timeout);
 	mdl = IoAllocateMdl(&g_Test1, PAGE_SIZE, FALSE, FALSE, NULL);
+	if (!mdl) KeBugCheckEx(0x3B, (ULONG_PTR)IoAllocateMdl, 0, 0, 0);
 	MmBuildMdlForNonPagedPool(mdl);
+	g_Test1Mdl = mdl;
 	PBOOLEAN mapTest1 = (PBOOLEAN)MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, NULL, FALSE, NormalPagePriority);
+	g_Test1Map = mapTest1;
 	if ((__readmsr(MSR_EFER) & EFER_SVME) == 0)
 	{
 		DbgPrintEx(77, 0, "[-]SVME is not enabled! \n");
@@ -348,10 +369,8 @@ NTSTATUS TestStartThread(PVOID context)
 	WRITE_PORT_UCHAR((PUCHAR)0xB2, 2);
 	DbgPrintEx(77, 0, "[*]g_Test1 map address: 0x%llX.\n", (UINT64)mapTest1);
 	DbgPrintEx(77, 0, "[*]driver_test address: 0x%llX.\n", (UINT64)&g_driverTest);
-	//PsTerminateProcessByPid(g_Pid);
-	timeout.QuadPart = -10000 * 30000;
+	if (g_Unload) DriverObject->DriverUnload = UnloadDriver;
 	TestFunc(0, 0, 0, 0, 5, 6, 7);
-	KeDelayExecutionThread(KernelMode, FALSE, &timeout);
 	__writemsr(MSR_EFER, __readmsr(MSR_EFER) & ~EFER_SVME);
 	__writemsr(MSR_VM_HSAVE_PA, 3);
 	hsavePa = __readmsr(MSR_VM_HSAVE_PA);
@@ -391,12 +410,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 	g_DeviceObject = deviceObject;
 	HANDLE hThread = NULL;
-	PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, NULL, NULL, NULL, (PKSTART_ROUTINE)TestStartThread, NULL);
+	PsCreateSystemThread(&hThread, THREAD_ALL_ACCESS, NULL, NULL, NULL, (PKSTART_ROUTINE)TestStartThread, DriverObject);
 	if(hThread)
 	{
 		ZwClose(hThread);
 		hThread = NULL;
 	}
-	DriverObject->DriverUnload = UnloadDriver;
 	return status;
 }

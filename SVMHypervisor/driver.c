@@ -594,6 +594,7 @@ VOID DriverUnload(PDRIVER_OBJECT DriverObject)
 	ExUnregisterCallback(g_PowerCallbackHandle);
 	ObDereferenceObject(g_PowerCallbackObj);
 	ExFreePoolWithTag(g_CpuContexts, 'SVM');
+	if (g_bDebug) DbgPrintEx(77,0,"[+]Hypervisor Driver is unloaded\n");
 }
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {

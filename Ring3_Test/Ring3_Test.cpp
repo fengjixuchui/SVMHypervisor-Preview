@@ -1,4 +1,6 @@
 ﻿#include <iostream>
+#include <ostream>
+#include <limits> 
 #include <Windows.h>
 #include <winternl.h>
 #include "Ring3_Test.h"
@@ -109,6 +111,14 @@ BOOL KernelForceTerminateProcess(HANDLE hDevice, UINT64 pid)
 	DWORD bytesReturned = 0;
 	return DeviceIoControl(hDevice, IOCTL_FORCE_TERMINATE, &pid, sizeof(pid), NULL, 0, &bytesReturned, NULL);
 }
+void CinClear()
+{
+	if (std::cin.fail())
+	{
+		std::cin.clear();
+	}
+	std::cin.ignore((std::numeric_limits<std::streamsize>::max)(), '\n');
+}
 int main()
 {
 	system("color a");
@@ -133,8 +143,15 @@ int main()
 			cout << "0. Exit" << endl;
 			cout << endl;
 			cout << "Please select an option: " << endl;;
-			int choice = 0;
-			cin >> choice;
+			UINT64 choice = 0;
+			if (!(cin >> std::dec >> choice))
+			{
+				CinClear();
+				cout << "Invalid input!" << endl;
+				continue;
+			}
+			CinClear();
+			choice &= 0xFFFF;
 			switch (choice)
 			{
 			case 1:
@@ -145,12 +162,16 @@ int main()
 			}
 			case 2:
 			{
-				BOOLEAN debug = FALSE;
-				BOOLEAN unload = FALSE;
+				UINT64 debug = FALSE;
+				UINT64 unload = FALSE;
 				cout << "input debug(0/1): "<<endl;
 				cin >> std::dec >> debug;
+				CinClear();
 				cout << "input unload(0/1): " << endl;
 				cin >> std::dec >> unload;
+				CinClear();
+				debug &= 0xFF;
+				unload &= 0xFF;
 				SvmControl(hDevice, debug, unload);
 				cout << endl;
 				break;
@@ -160,6 +181,7 @@ int main()
 				UINT64 address = 0;
 				cout << "Enter address to read: " << endl;
 				cin >> std::hex >> address;
+				CinClear();
 				UINT64 buffer = 0;
 				KernelReadMemory(hDevice, (PVOID)address, &buffer, sizeof(buffer));
 				cout << "Read Value: " << std::hex << buffer << endl;
@@ -171,9 +193,11 @@ int main()
 				UINT64 address = 0;
 				cout << "Enter address to write: " << endl;
 				cin >> std::hex >> address;
+				CinClear();
 				UINT64 value = 0;
 				cout << "Enter value to write: " << endl;
 				cin >> std::hex >> value;
+				CinClear();
 				if (!KernelWriteMemory(hDevice, (PVOID)address, &value, sizeof(value)))
 				{
 					cout << "Write Memory Failed! errcode: "<< GetLastError() << endl;
@@ -190,6 +214,7 @@ int main()
 				UINT64 msr = 0;
 				cout << "Input MSR: " << endl;
 				cin >> std::hex >> msr;
+				CinClear();
 				UINT64 value = 0;
 				if (!KernelReadMSR(hDevice, (UINT32)msr, &value))
 				{
@@ -207,9 +232,12 @@ int main()
 				UINT64 msr = 0;
 				cout << "input msr: " << endl;
 				cin >> std::hex >> msr;
+				CinClear();
 				UINT64 value = 0;
 				cout << "input value: " << endl;
 				cin >> std::hex >> value;
+				CinClear();
+				msr &= 0xFFFFFFFF;
 				if (KernelWriteMSR(hDevice, (UINT32)msr, value))
 				{
 					cout << "Write MSR Success!" << endl;
@@ -230,6 +258,8 @@ int main()
 				UINT64 pid = 0;
 				cout << "Enter PID to set protected: " << endl;
 				cin >> std::dec >> pid;
+				CinClear();
+				pid &= 0xFFFFFFFF;
 				KernelSetProtectedProcess(hDevice, pid);
 				cout << endl;
 				break;
@@ -239,6 +269,8 @@ int main()
 				DWORD64 pid = 0;
 				cout << "Enter PID to kill: " << endl;
 				cin >> std::dec >> pid;
+				CinClear();
+				pid &= 0xFFFFFFFF;
 				KillProcess(pid);
 				cout << endl;
 				break;
@@ -248,6 +280,8 @@ int main()
 				DWORD64 pid = 0;
 				cout << "Enter PID to kill: " << endl;
 				cin >> std::dec >> pid;
+				CinClear();
+				pid &= 0xFFFFFFFF;
 				KernelForceTerminateProcess(hDevice, pid);
 				cout << endl;
 				break;
